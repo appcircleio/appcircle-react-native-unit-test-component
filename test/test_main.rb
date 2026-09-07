@@ -1,6 +1,3 @@
-# frozen_string_literal: true
-
-# ─── Coverage ─────────────────────────────────────────────────────────────────
 COVERAGE_ENABLED = begin
   require 'coverage'
   Coverage.start
@@ -9,7 +6,6 @@ rescue LoadError, StandardError
   false
 end
 
-# ─── Dependencies ─────────────────────────────────────────────────────────────
 require 'rspec'
 require 'rspec/core/formatters/base_formatter'
 require 'open3'
@@ -17,23 +13,18 @@ require 'fileutils'
 require 'tmpdir'
 require 'stringio'
 require 'rbconfig'
-require 'English'
 
 MAIN_RB      = File.expand_path('../main.rb', __dir__)
 PROJECT_ROOT = File.dirname(MAIN_RB)
 
 require_relative '../main.rb'
 
-# The 'colored' gem is optional in a bare test environment. main.rb calls
-# String#green on its success message, so define the colour helpers only when
-# the gem is absent, keeping the suite deterministic either way.
 class String
   %i[green red blue yellow cyan].each do |color|
     define_method(color) { self } unless method_defined?(color)
   end
 end
 
-# ─── Custom Formatter ─────────────────────────────────────────────────────────
 class ReadableFormatter < RSpec::Core::Formatters::BaseFormatter
   RSpec::Core::Formatters.register(
     self,
@@ -54,10 +45,10 @@ class ReadableFormatter < RSpec::Core::Formatters::BaseFormatter
   DIVIDER_FAT = "\e[90m#{'═' * 72}\e[0m"
 
   GROUP_COLORS = [
-    "\e[34;1m",  # bold blue
-    "\e[35;1m",  # bold magenta
-    "\e[36;1m",  # bold cyan
-    "\e[33;1m"   # bold yellow
+    "\e[34;1m",
+    "\e[35;1m",
+    "\e[36;1m",
+    "\e[33;1m"
   ].freeze
 
   def initialize(output)
@@ -147,9 +138,6 @@ class ReadableFormatter < RSpec::Core::Formatters::BaseFormatter
   end
 end
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-# Capture everything the block writes to stdout.
 def capture_stdout
   original = $stdout
   $stdout  = StringIO.new
@@ -159,7 +147,22 @@ ensure
   $stdout = original
 end
 
-# Set an env var for the duration of the block, then restore it.
+def capture_stderr
+  original = $stderr
+  $stderr  = StringIO.new
+  yield
+  $stderr.string
+ensure
+  $stderr = original
+end
+
+def swallow_exit
+  yield
+  nil
+rescue SystemExit => e
+  e
+end
+
 def with_env(key, value)
   had_key = ENV.key?(key)
   old     = ENV[key]
@@ -169,8 +172,6 @@ ensure
   had_key ? ENV[key] = old : ENV.delete(key)
 end
 
-# Run main.rb in a subprocess with a clean environment.
-# Keys left as nil are unset in the child process.
 def run_main(env = {})
   clean_env = {
     'AC_OUTPUT_DIR'           => nil,
@@ -179,6 +180,13 @@ def run_main(env = {})
     'AC_ENV_FILE_PATH'        => nil
   }.merge(env)
   Open3.capture3(clean_env, RbConfig.ruby, MAIN_RB)
+end
+
+def require_main_in_subprocess(script)
+  Open3.capture3(
+    { 'AC_OUTPUT_DIR' => nil, 'AC_REPOSITORY_DIR' => nil, 'AC_ENV_FILE_PATH' => nil },
+    RbConfig.ruby, '-e', "require '#{MAIN_RB}'; #{script}"
+  )
 end
 
 def print_coverage_report
@@ -200,17 +208,13 @@ rescue StandardError => e
   puts "\n  Coverage: unavailable (#{e.class})"
 end
 
-# ─── Tests ────────────────────────────────────────────────────────────────────
-
 RSpec.describe 'Required libraries' do
-  %w[open3 English].each do |lib|
+  %w[open3 fileutils tmpdir].each do |lib|
     it "loads '#{lib}'" do
       expect { require lib }.not_to raise_error
     end
   end
 end
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 RSpec.describe '#get_env_variable' do
   context 'positive paths' do
@@ -218,7 +222,7 @@ RSpec.describe '#get_env_variable' do
       with_env('_TEST_VAR', 'hello') { expect(get_env_variable('_TEST_VAR')).to eq('hello') }
     end
 
-    it 'returns a whitespace-only value as-is (only "" counts as empty)' do
+    it 'returns a whitespace-only value as-is' do
       with_env('_TEST_VAR', '  ') { expect(get_env_variable('_TEST_VAR')).to eq('  ') }
     end
 
@@ -235,10 +239,12 @@ RSpec.describe '#get_env_variable' do
     it 'returns nil when the value is an empty string' do
       with_env('_TEST_VAR', '') { expect(get_env_variable('_TEST_VAR')).to be_nil }
     end
+
+    it 'does not raise for a key that was never defined' do
+      expect { get_env_variable('_UNDEFINED_KEY_FOR_TESTS') }.not_to raise_error
+    end
   end
 end
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 RSpec.describe '#env_has_key' do
   context 'positive paths' do
@@ -249,36 +255,49 @@ RSpec.describe '#env_has_key' do
     it 'returns a whitespace-only value without aborting' do
       with_env('_TEST_VAR', ' ') { expect(env_has_key('_TEST_VAR')).to eq(' ') }
     end
+
+    it 'writes nothing to stderr when the key is set' do
+      with_env('_TEST_VAR', 'x') { expect(capture_stderr { env_has_key('_TEST_VAR') }).to be_empty }
+    end
   end
 
   context 'negative paths' do
     it 'aborts when the key is missing' do
-      with_env('_TEST_VAR', nil) { expect { env_has_key('_TEST_VAR') }.to raise_error(SystemExit) }
+      with_env('_TEST_VAR', nil) do
+        expect { capture_stderr { env_has_key('_TEST_VAR') } }.to raise_error(SystemExit)
+      end
     end
 
     it 'aborts when the value is an empty string' do
-      with_env('_TEST_VAR', '') { expect { env_has_key('_TEST_VAR') }.to raise_error(SystemExit) }
+      with_env('_TEST_VAR', '') do
+        expect { capture_stderr { env_has_key('_TEST_VAR') } }.to raise_error(SystemExit)
+      end
     end
 
     it 'exits with status 1' do
       with_env('_TEST_VAR', nil) do
-        expect { env_has_key('_TEST_VAR') }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
+        expect { capture_stderr { env_has_key('_TEST_VAR') } }
+          .to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
       end
     end
 
     it 'names the missing input on stderr' do
       with_env('_TEST_VAR', nil) do
-        expect { env_has_key('_TEST_VAR') }.to output(/Input _TEST_VAR is missing\./).to_stderr
+        err = capture_stderr { swallow_exit { env_has_key('_TEST_VAR') } }
+        expect(err).to include('Input _TEST_VAR is missing.')
+      end
+    end
+
+    it 'names the empty input on stderr' do
+      with_env('_TEST_VAR', '') do
+        err = capture_stderr { swallow_exit { env_has_key('_TEST_VAR') } }
+        expect(err).to include('Input _TEST_VAR is missing.')
       end
     end
   end
 end
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 RSpec.describe '#run_command' do
-  # Open3.popen3 is stubbed throughout: no process is ever spawned and no
-  # npm / yarn / jest binary is required to run this suite.
   let(:captured) { [] }
 
   def stub_popen3(success:, stderr_text: '', stdout_lines: [])
@@ -313,6 +332,11 @@ RSpec.describe '#run_command' do
       expect(captured).to eq(['cd /repo && yarn jest --coverage'])
     end
 
+    it 'spawns exactly one process per call' do
+      capture_stdout { run_command('npm test', false) }
+      expect(captured.size).to eq(1)
+    end
+
     it 'prints each stdout line of the child process' do
       stub_popen3(success: true, stdout_lines: ["first\n", "second\n"])
       output = capture_stdout { run_command('npm test', false) }
@@ -332,6 +356,10 @@ RSpec.describe '#run_command' do
 
     it 'handles an empty command string without raising' do
       expect(capture_stdout { run_command('', false) }).to include('@@[command] ')
+    end
+
+    it 'handles a nil command without raising' do
+      expect(capture_stdout { run_command(nil, false) }).to include('@@[command] ')
     end
   end
 
@@ -357,37 +385,43 @@ RSpec.describe '#run_command' do
       expect($exit_status_code).to eq(1)
     end
 
+    it 'keeps $exit_status_code at 1 across later successful commands' do
+      $exit_status_code = 0
+      capture_stdout { run_command('npm test', true) }
+      stub_popen3(success: true)
+      capture_stdout { run_command('cp a b', true) }
+      expect($exit_status_code).to eq(1)
+    end
+
     it 'prints the captured stderr of the child process' do
       expect(capture_stdout { run_command('npm test', true) }).to include('jest: command not found')
     end
 
     it 'still echoes the command before failing' do
-      output = ''
-      begin
-        output = capture_stdout { run_command('npm test', false) }
-      rescue SystemExit
-        nil
-      end
+      output = capture_stdout { swallow_exit { run_command('npm test', false) } }
       expect(output).to include('@@[command] npm test')
+    end
+
+    it 'prints stderr before exiting when skip_abort is false' do
+      output = capture_stdout { swallow_exit { run_command('npm test', false) } }
+      expect(output).to include('jest: command not found')
     end
   end
 end
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 RSpec.describe '#runTests' do
-  # run_command is stubbed: the composed command strings are asserted, never
-  # executed, so no npm / yarn / jest runs and nothing leaves the tmpdir.
   let(:tmpdir)   { Dir.mktmpdir('rn_unit_test') }
   let(:repo)     { File.join(tmpdir, 'repo') }
   let(:output)   { File.join(tmpdir, 'output') }
   let(:env_file) { File.join(tmpdir, 'env_file') }
   let(:commands) { [] }
+  let(:skips)    { [] }
 
   before do
     FileUtils.mkdir_p(repo)
     FileUtils.mkdir_p(output)
-    allow(self).to receive(:run_command) { |command, _skip| commands << command }
+    allow(self).to receive(:run_command) { |command, skip| commands << command; skips << skip }
+    allow(Open3).to receive(:popen3).and_raise('Open3.popen3 must not be reached from runTests')
     $repo_path   = repo
     $output_path = output
     $jest_params = nil
@@ -408,13 +442,18 @@ RSpec.describe '#runTests' do
 
     it 'uses npm when the repository has no yarn.lock' do
       capture_stdout { runTests }
-      expect(commands.first).to include("cd #{repo} && npm jest --coverage")
+      expect(commands.first).to start_with("cd #{repo} && npm jest --coverage")
     end
 
     it 'uses yarn when the repository has a yarn.lock' do
       FileUtils.touch(File.join(repo, 'yarn.lock'))
       capture_stdout { runTests }
-      expect(commands.first).to include("cd #{repo} && yarn jest --coverage")
+      expect(commands.first).to start_with("cd #{repo} && yarn jest --coverage")
+    end
+
+    it 'composes the full default jest command when no extra parameters are set' do
+      capture_stdout { runTests }
+      expect(commands.first).to eq("cd #{repo} && npm jest --coverage --coverageDirectory='coverage' --coverageReporters='lcov' ")
     end
 
     it 'requests the lcov coverage reporter in the coverage directory' do
@@ -426,7 +465,7 @@ RSpec.describe '#runTests' do
     it 'appends the extra jest parameters when they are set' do
       $jest_params = '--ci --silent'
       capture_stdout { runTests }
-      expect(commands.first).to end_with('--ci --silent')
+      expect(commands.first).to end_with("--coverageReporters='lcov' --ci --silent")
     end
 
     it 'copies the test report xml files into the output directory' do
@@ -439,31 +478,39 @@ RSpec.describe '#runTests' do
       expect(commands[2]).to eq("cp -r #{repo}/coverage #{output}")
     end
 
+    it 'allows only the jest run to fail without aborting' do
+      capture_stdout { runTests }
+      expect(skips).to eq([true, false, false])
+    end
+
+    it 'creates the env file when it does not exist yet' do
+      capture_stdout { runTests }
+      expect(File.file?(env_file)).to be(true)
+    end
+
     it 'exports AC_TEST_RESULT_PATH to the env file' do
       capture_stdout { runTests }
-      expect(File.read(env_file)).to include("AC_TEST_RESULT_PATH=#{output}")
+      expect(File.read(env_file)).to include("AC_TEST_RESULT_PATH=#{output}\n")
     end
 
     it 'exports AC_COVERAGE_RESULT_PATH to the env file' do
       capture_stdout { runTests }
-      expect(File.read(env_file)).to include("AC_COVERAGE_RESULT_PATH=#{output}/coverage")
+      expect(File.read(env_file)).to include("AC_COVERAGE_RESULT_PATH=#{output}/coverage\n")
     end
 
     it 'appends to an existing env file instead of truncating it' do
       File.write(env_file, "EXISTING=1\n")
       capture_stdout { runTests }
-      expect(File.read(env_file)).to include('EXISTING=1')
+      expect(File.read(env_file)).to start_with("EXISTING=1\n")
     end
 
     it 'reports success on stdout' do
       expect(capture_stdout { runTests }).to include('Tests completed successfully.')
     end
 
-    it 'allows the jest run to fail without aborting (skip_abort is true)' do
-      skips = []
-      allow(self).to receive(:run_command) { |command, skip| commands << command; skips << skip }
+    it 'never spawns a real process' do
       capture_stdout { runTests }
-      expect(skips).to eq([true, false, false])
+      expect(Open3).not_to have_received(:popen3)
     end
   end
 
@@ -492,57 +539,81 @@ RSpec.describe '#runTests' do
       end
       expect(commands.size).to eq(3)
     end
+
+    it 'does not report success when the env file cannot be written' do
+      ENV['AC_ENV_FILE_PATH'] = File.join(tmpdir, 'missing', 'env_file')
+      output = ''
+      begin
+        output = capture_stdout { runTests }
+      rescue Errno::ENOENT
+        nil
+      end
+      expect(output).not_to include('Tests completed successfully.')
+    end
   end
 end
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 RSpec.describe 'main.rb as a script' do
+  let(:tmpdir)   { Dir.mktmpdir('rn_unit_test_script') }
+  let(:repo)     { File.join(tmpdir, 'repo').tap { |d| FileUtils.mkdir_p(d) } }
+  let(:output)   { File.join(tmpdir, 'output').tap { |d| FileUtils.mkdir_p(d) } }
+  let(:env_file) { File.join(tmpdir, 'env_file') }
+
+  after { FileUtils.rm_rf(tmpdir) }
+
   describe 'required environment variables' do
     context 'when AC_OUTPUT_DIR is missing' do
+      let(:env) { { 'AC_REPOSITORY_DIR' => repo, 'AC_ENV_FILE_PATH' => env_file } }
+
       it 'exits with status 1' do
-        _out, _err, status = run_main('AC_REPOSITORY_DIR' => '/tmp')
+        _out, _err, status = run_main(env)
         expect(status.exitstatus).to eq(1)
       end
 
       it 'names the missing input on stderr' do
-        _out, err, _status = run_main('AC_REPOSITORY_DIR' => '/tmp')
+        _out, err, _status = run_main(env)
         expect(err).to include('Input AC_OUTPUT_DIR is missing.')
       end
     end
 
     context 'when AC_OUTPUT_DIR is empty' do
+      let(:env) { { 'AC_OUTPUT_DIR' => '', 'AC_REPOSITORY_DIR' => repo, 'AC_ENV_FILE_PATH' => env_file } }
+
       it 'exits with status 1' do
-        _out, _err, status = run_main('AC_OUTPUT_DIR' => '', 'AC_REPOSITORY_DIR' => '/tmp')
+        _out, _err, status = run_main(env)
         expect(status.exitstatus).to eq(1)
       end
 
       it 'names the missing input on stderr' do
-        _out, err, _status = run_main('AC_OUTPUT_DIR' => '', 'AC_REPOSITORY_DIR' => '/tmp')
+        _out, err, _status = run_main(env)
         expect(err).to include('Input AC_OUTPUT_DIR is missing.')
       end
     end
 
     context 'when AC_REPOSITORY_DIR is missing' do
+      let(:env) { { 'AC_OUTPUT_DIR' => output, 'AC_ENV_FILE_PATH' => env_file } }
+
       it 'exits with status 1' do
-        _out, _err, status = run_main('AC_OUTPUT_DIR' => '/tmp/out')
+        _out, _err, status = run_main(env)
         expect(status.exitstatus).to eq(1)
       end
 
       it 'names the missing input on stderr' do
-        _out, err, _status = run_main('AC_OUTPUT_DIR' => '/tmp/out')
+        _out, err, _status = run_main(env)
         expect(err).to include('Input AC_REPOSITORY_DIR is missing.')
       end
     end
 
     context 'when AC_REPOSITORY_DIR is empty' do
+      let(:env) { { 'AC_OUTPUT_DIR' => output, 'AC_REPOSITORY_DIR' => '', 'AC_ENV_FILE_PATH' => env_file } }
+
       it 'exits with status 1' do
-        _out, _err, status = run_main('AC_OUTPUT_DIR' => '/tmp/out', 'AC_REPOSITORY_DIR' => '')
+        _out, _err, status = run_main(env)
         expect(status.exitstatus).to eq(1)
       end
 
       it 'names the missing input on stderr' do
-        _out, err, _status = run_main('AC_OUTPUT_DIR' => '/tmp/out', 'AC_REPOSITORY_DIR' => '')
+        _out, err, _status = run_main(env)
         expect(err).to include('Input AC_REPOSITORY_DIR is missing.')
       end
     end
@@ -553,41 +624,59 @@ RSpec.describe 'main.rb as a script' do
       expect(err).not_to include('Input AC_REPOSITORY_DIR is missing.')
     end
 
+    it 'reports only the first missing input' do
+      _out, err, _status = run_main
+      expect(err.scan('is missing.').size).to eq(1)
+    end
+
     it 'never reaches the jest command while a required input is missing' do
       out, _err, _status = run_main
       expect(out).not_to include('@@[command]')
+    end
+
+    it 'does not touch the env file while a required input is missing' do
+      run_main('AC_ENV_FILE_PATH' => env_file)
+      expect(File.exist?(env_file)).to be(false)
     end
   end
 
   describe 'loading main.rb as a library' do
     it 'does not execute the script body when required' do
-      out, _err, status = Open3.capture3(
-        { 'AC_OUTPUT_DIR' => nil, 'AC_REPOSITORY_DIR' => nil },
-        RbConfig.ruby, '-e', "require '#{MAIN_RB}'; puts 'loaded'"
-      )
+      out, _err, status = require_main_in_subprocess("puts 'loaded'")
       expect(status.exitstatus).to eq(0)
       expect(out).to include('loaded')
     end
 
     it 'does not run any command when required' do
-      out, _err, _status = Open3.capture3(
-        { 'AC_OUTPUT_DIR' => nil, 'AC_REPOSITORY_DIR' => nil },
-        RbConfig.ruby, '-e', "require '#{MAIN_RB}'; puts 'loaded'"
-      )
+      out, _err, _status = require_main_in_subprocess("puts 'loaded'")
       expect(out).not_to include('@@[command]')
     end
 
+    it 'does not validate inputs when required' do
+      _out, err, _status = require_main_in_subprocess("puts 'loaded'")
+      expect(err).not_to include('is missing.')
+    end
+
     it 'defines the helper functions when required' do
-      out, _err, _status = Open3.capture3(
-        RbConfig.ruby, '-e',
-        "require '#{MAIN_RB}'; puts %w[get_env_variable env_has_key run_command runTests].all? { |m| respond_to?(m, true) }"
+      out, _err, _status = require_main_in_subprocess(
+        "puts %w[get_env_variable env_has_key run_command runTests].all? { |m| respond_to?(m, true) }"
       )
-      expect(out).to include('true')
+      expect(out.strip).to eq('true')
+    end
+
+    it 'initialises $exit_status_code to 0 when required' do
+      out, _err, _status = require_main_in_subprocess('puts $exit_status_code')
+      expect(out.strip).to eq('0')
+    end
+
+    it 'loads without the colored gem' do
+      out, _err, status = require_main_in_subprocess("puts defined?(Colored) ? 'colored' : 'plain'")
+      expect(status.exitstatus).to eq(0)
+      expect(out.strip).to match(/\A(colored|plain)\z/)
     end
   end
 end
 
-# ─── Runner ───────────────────────────────────────────────────────────────────
 if __FILE__ == $PROGRAM_NAME
   RSpec.configure do |config|
     config.add_formatter ReadableFormatter
