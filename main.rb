@@ -1,5 +1,14 @@
 require 'open3'
-require 'colored'
+
+# Optional dependency: only used for the coloured success message at the end of
+# runTests. It is not always installed in a bare Ruby environment (for example
+# when the unit tests require this file), so a missing gem must not break the
+# load.
+begin
+  require 'colored'
+rescue LoadError
+  # 'colored' is unavailable - String#green is simply not defined.
+end
 
 def get_env_variable(key)
   return (ENV[key] == nil || ENV[key] == "") ? nil : ENV[key]
@@ -11,10 +20,6 @@ def env_has_key(key)
 
   abort("Input #{key} is missing.")
 end
-
-$output_path = env_has_key("AC_OUTPUT_DIR")
-$repo_path = env_has_key("AC_REPOSITORY_DIR")
-$jest_params = get_env_variable("AC_RN_TEST_COMMAND_ARGS")
 
 $exit_status_code = 0
 def run_command(command, skip_abort)
@@ -59,5 +64,13 @@ def runTests
   puts 'Tests completed successfully.'.green
 end
 
+if __FILE__ == $PROGRAM_NAME
+
+$output_path = env_has_key("AC_OUTPUT_DIR")
+$repo_path = env_has_key("AC_REPOSITORY_DIR")
+$jest_params = get_env_variable("AC_RN_TEST_COMMAND_ARGS")
+
 runTests()
 exit $exit_status_code
+
+end # if __FILE__ == $PROGRAM_NAME

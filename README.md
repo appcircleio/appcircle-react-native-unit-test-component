@@ -15,3 +15,13 @@ Run React Native unit tests with Jest.
 
 - `$AC_TEST_RESULT_PATH`: Path to the test result file.
 - `$AC_COVERAGE_RESULT_PATH`: Path to the coverage result file.
+
+## Running tests
+
+Requires [RSpec](https://rspec.info) gem and Ruby standard library. No Gemfile or Bundler needed.
+
+```bash
+ruby test/test_main.rb
+```
+
+A pass/fail summary and a coverage report are printed at the end of each run.
