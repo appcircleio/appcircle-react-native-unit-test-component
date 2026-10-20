@@ -43,7 +43,8 @@ end
 
 def runTests
   
-  yarn_or_npm = File.file?("#{$repo_path}/yarn.lock") ? "yarn" : "npm"
+  # npm has no "jest" command; npx runs the project's local Jest CLI
+  yarn_or_npm = File.file?("#{$repo_path}/yarn.lock") ? "yarn" : "npx"
   
   report_command = "jest --coverage --coverageDirectory='coverage' --coverageReporters='lcov' #{$jest_params}"
 
